@@ -19,6 +19,7 @@ class DummyBackend(TranslationBackend):
         max_batch_chars: int = 4000,
         glossary: Optional[Sequence[dict]] = None,
         context: Optional[str] = None,
+        max_concurrent_requests: int = 1,
     ) -> List[TranslatableUnit]:
         updated: List[TranslatableUnit] = []
         for unit in units:

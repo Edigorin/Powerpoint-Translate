@@ -12,6 +12,8 @@ license = { text = "MIT" }
 authors = [{ name = "Your Name" }]
 dependencies = [
     "openai>=1.30.0",
+    "python-pptx>=0.6.23",
+    "Pillow>=10.0.0",
 ]
 
 [project.scripts]
@@ -24,4 +26,8 @@ where = ["src"]
 dev = [
     "pytest>=7.4",
     "python-pptx>=0.6.23",
+]
+ocr = [
+    "pytesseract>=0.3.10",
+    "Pillow>=10.0.0",
 ]

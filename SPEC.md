@@ -192,53 +192,211 @@ Backend configuration:
 - Per-shape or per-placeholder rules (e.g. never translate certain placeholders).
 - Post-translation QA report (detected overflows, truncated text, etc.).
 
-## 12. Next Steps (Performance, Context, Images)
+## 12. Advanced Features (Versioning, Performance, Context, Images, QA)
 
-### 12.1 Performance & Latency
+### 12.1 Run ID & Versioning
 
+Goals:
+- Avoid overwriting previous translated decks.
+- Make each translation run traceable via a unique run identifier, both in the filename and inside the PPTX metadata.
+
+Run identifier:
+- Each invocation of the translator has a `run_id` string.
+- If the user does not pass `--run-id`, the tool auto-generates one using UTC timestamp plus a short random suffix, e.g. `20241126-213045-3f7a`.
+- The user can override with `--run-id <string>` (must be filesystem-safe: alphanumeric plus `-` / `_`).
+- `--no-run-id` disables run-id in the output filename (but a run id is still generated for internal metadata).
+
+Output filename semantics:
+- Default output (no `--output`):
+  - Current default is `<input>.<target>.pptx`. With run id, it becomes `<stem>.<target>.<run_id>.pptx`, e.g. `Deck.fr.20241126-213045-3f7a.pptx`.
+- Explicit `--output` provided:
+  - If `--run-id` or auto-run-id is in effect, the tool appends `.<run_id>` before `.pptx` unless `--no-run-id` is set, e.g. `output.fr.pptx` -> `output.fr.20241126-213045-3f7a.pptx`.
+  - If `--no-run-id` is set, the tool writes exactly to `--output` (may overwrite if the file exists).
+- Overwrite behavior:
+  - By default, if the final output filename already exists and `--no-run-id` is set, the tool fails with a clear error message.
+  - A future `--overwrite` flag may allow forced overwrite; without it, run-id is the primary mechanism to keep versions.
+
+Embedded run metadata:
+- The tool writes run metadata into `docProps/custom.xml` as custom properties, for example:
+  - `pptx_translate_run_id`
+  - `pptx_translate_source_lang`
+  - `pptx_translate_target_lang`
+  - `pptx_translate_backend`
+  - `pptx_translate_model`
+  - `pptx_translate_timestamp_utc`
+  - `pptx_translate_profile` (fast/balanced/quality)
+- The QA report and logs reference the same `run_id` so users can match files, logs, and reports.
+
+CLI changes (summary):
+- `--run-id <string>`: explicitly set run id used in filenames and metadata.
+- `--no-run-id`: do not modify the output filename (but still generate run id internally).
+
+### 12.2 Performance & Latency
+
+Batching strategy:
 - Reduce number of API calls by tuning batching:
-  - Experiment with larger `max_batch_chars` defaults for OpenAI-backed translation while staying within model limits.
-  - Optionally expose a CLI flag (e.g. `--max-batch-chars`) tuned to “fast but safe” presets.
-- Add optional concurrency:
-  - Spec an internal scheduler that can send multiple batches in parallel (subject to rate limits).
-  - Future CLI flag: `--max-concurrent-requests` to control parallelism.
-- De-duplicate repeated text (implemented):
-  - Identical `source_text` entries are translated once and reused for all duplicates.
-- Allow “fast mode” profiles:
-  - Preset configurations that skip masters/notes or use a cheaper/faster model for bulk translation.
+  - Use `--max-batch-chars` as a soft upper bound and infer a token-aware limit per model (e.g., percentage of context window).
+  - Auto-split large batches on backend errors (e.g. context-length or rate-limit) and retry with smaller batch sizes.
 
-### 12.2 Context-Aware Translation & Terminology
+Concurrency:
+- Introduce an internal scheduler to send multiple translation batches in parallel, subject to backend rate limits.
+- CLI flag `--max-concurrent-requests` (default: 1) controls the maximum number of in-flight translation requests per run.
+- Guarantees:
+  - Translation units are grouped into batches, and batches are processed concurrently up to the limit.
+  - Order of translations is preserved when reconstructing the final list of `TranslatableUnit`s.
+  - Concurrency is only used for network-based backends; dummy/local backends may ignore it or run synchronously.
 
-- Deck-level context analysis:
-  - First pass over all slides to build a “deck profile” (title, agenda, frequent terms, section headers).
-  - Use this profile as part of the system prompt for all translation batches.
-- User-provided context (implemented):
-  - CLI flags `--context` / `--context-file` allow passing domain/product guidance into the backend prompt.
-- Glossary and terminology enforcement (implemented for user-supplied files):
-  - Accepts user-provided glossary files via CLI (`--glossary glossary.json` or CSV with `source,target` columns).
-  - Passes glossary entries into the backend prompt with instructions like “must use these translations for the following terms”.
-  - Optional pre-check to flag glossary terms not found in the deck (future).
-- Two-step context workflow (optional):
-  - Step 1: Summarize the deck and extract candidate domain terms via LLM.
-  - Step 2: Present or export a suggested glossary for user review.
-  - Step 3: Run the final translation pass using the approved glossary and deck summary as context.
-- Per-section context:
-  - Group units by slide or section and include slide/section titles in the prompt so technical terms are translated consistently within a topic.
+Fast mode profiles:
+- Add `--profile` flag with values like:
+  - `fast`: larger batches, higher `--max-concurrent-requests`, dedupe enabled, cheaper/faster model (e.g., `gpt-4o-mini`), and by default `--no-include-masters` and `--no-include-notes` unless overridden.
+  - `balanced` (default): current behavior with moderate batch sizes, dedupe on, masters/notes included, standard model.
+  - `quality`: smaller batches, possibly slower but higher-quality model (e.g., full `gpt-4o`), dedupe still on, masters/notes included, and no aggressive concurrency.
+- Profiles set reasonable defaults for:
+  - `max_batch_chars`
+  - `max_concurrent_requests`
+  - `backend`/`model` (where appropriate)
+  - `include_notes` / `include_masters`
+  - `dedupe_text`
 
-### 12.3 Translating Text in Images (OCR)
+Smarter auto-tuning of `max_batch_chars`:
+- The translator keeps track of:
+  - Observed error responses indicating too-large payloads.
+  - Average response times per batch.
+- Behavior:
+  - On context-length or 413-like errors, reduce effective batch size for subsequent requests by a configurable factor (e.g., 50%). Persist for the rest of the run.
+  - On consistently fast responses with small batches, optionally increase batch size up to the soft upper bound to reduce total calls.
+  - These adjustments are logged, including the final effective batch size chosen.
 
-- Image text detection:
-  - Identify picture shapes/images via OOXML (e.g. `<p:pic>` and related `blip` references).
-  - Run an OCR backend (e.g. Tesseract, Azure Vision, or another API) on each image to extract text.
-  - Represent each OCR result as a `TranslatableUnit` with a location referencing the image ID/file.
-- Translation and reinsertion strategies:
-  - Strategy A (non-destructive overlay):
-    - Create new text boxes over or near the original image to display the translated text.
-    - Preserve the original image and slide layout; keep overlay positioning as close as possible.
-  - Strategy B (image replacement, later):
-    - Render a new image with translated text baked in (requires image rendering pipeline, e.g. Pillow or external service).
-    - Replace the original image in the PPTX while keeping geometry (size/position) unchanged.
-- Controls and scope:
-  - Add CLI toggle such as `--translate-images` (default off due to performance and API cost).
-  - Allow selecting OCR backend and configuration via `--image-ocr-backend` and `--image-ocr-config`.
-  - Document that image text translation can significantly increase processing time compared to plain text-only translation.
+### 12.3 Context-Aware Translation & Terminology
+
+Deck-level context analysis:
+- First pass over all slides to build a "deck profile" before translation:
+  - Extract: deck title, agenda/TOC slide(s), section headers, repeated phrases, top keywords, and any existing glossary slides.
+  - Optionally call an LLM once with a subset of representative slide text to summarize:
+    - Domain (e.g., cybersecurity, finance, medical).
+    - Target audience.
+    - Register (formal/informal).
+  - Store this as a structured `DeckProfile` object (in memory) and as an optional JSON file if requested via CLI.
+- The `DeckProfile` is converted into a compact textual context string and appended to the system or user prompt for all translation batches.
+
+User-provided context (already available):
+- CLI flags `--context` / `--context-file` remain and are merged with the auto-generated `DeckProfile`:
+  - Final context = user context + derived deck profile summary.
+  - User context has precedence in case of conflicting instructions.
+
+Glossary and terminology enforcement (two-step workflow):
+- Step 1: Glossary suggestion run:
+  - New CLI mode `--generate-glossary <output.csv>` (or `.json`), which:
+    - Analyzes the deck texts (titles, headers, repeated terms).
+    - Calls an LLM to propose candidate term pairs (source/target) with optional notes.
+    - Writes a file with columns such as `source`, `preferred_target`, `notes`, `frequency`.
+  - In this mode, no translation is performed; the tool exits after generating the glossary.
+- Step 2: User review:
+  - User edits the generated glossary to keep/remove/edit entries.
+- Step 3: Translation run with enforced glossary:
+  - User supplies the approved glossary with `--glossary` (CSV/JSON).
+  - Backend prompt includes explicit instructions to respect these mappings.
+
+Per-section context:
+- The tool groups slides into sections as defined in the PPTX (if available) or infers sections based on title slides.
+- For each batch of units belonging to the same slide/section:
+  - The section title and slide title are included in the batch-specific context (e.g., "Section: Incident Response; Slide: Containment Step 1").
+  - This per-section context is merged with the global `DeckProfile` and user context for that batch.
+
+Modes of operation:
+- Default (single-pass): build `DeckProfile` automatically and use it immediately; no user interaction required beyond optional `--glossary`.
+- Two-step workflow:
+  - First run with `--generate-glossary` (and optionally `--write-deck-profile profile.json`).
+  - Second run with `--glossary` and optional `--context-file profile.json` for fully controlled terminology.
+
+### 12.4 Translating Text in Images (OCR)
+
+Overview:
+- Enable translation of text that appears inside images (screenshots, diagrams, scanned documents) by running OCR and overlaying translated text inside the slide.
+
+OCR backends:
+- Define an `OcrBackend` interface similar to `TranslationBackend`, with at least:
+  - `recognize(self, images: list[ImageInput], config: dict | None) -> list[OcrResult]`
+  - `ImageInput` contains: image bytes, source filename/path, slide index, and shape identifier.
+  - `OcrResult` contains: recognized text, confidence, bounding boxes (relative to image coordinates), language hints.
+- Initial OCR backend implementations (design-level):
+  - `tesseract`: local OCR via Tesseract/pytesseract (requires local installation).
+  - `azure-vision`: remote OCR using Azure Cognitive Services.
+  - Future: an OpenAI vision-based backend.
+
+Image detection and OCR pipeline:
+- Identify picture shapes in each slide via OOXML (e.g. `<p:pic>` with `a:blip` references to `ppt/media/image*.png`).
+- For each image:
+  - Extract the image binary and its placement/size (bounding box on the slide).
+  - Send images to the configured `OcrBackend` (optionally batched) to get recognized text + bounding boxes.
+  - For each recognized text region, create a `TranslatableUnit` with:
+    - `location`: slide index + image id + region index.
+    - `source_text`: OCR text.
+    - `context`: marked as `"image_text"` plus nearby slide text/section info.
+
+Translating and reinserting image text:
+- Translation:
+  - Image-derived `TranslatableUnit`s flow through the same translation pipeline as other units (including glossary and context).
+- Reinsertion strategy (initial implementation: non-destructive overlay):
+  - For each `OcrResult` region, create a new text box (`<p:sp>` shape) on the slide:
+    - Positioned over (or near) the original bounding box scaled to slide coordinates.
+    - With a semi-transparent background or contrasting color to ensure readability.
+    - With font size scaled roughly to match the size of the original text region.
+  - Keep the original image unchanged behind the overlay.
+- Future strategy (image replacement):
+  - Render a new image with translated text baked in (using Pillow or an external rendering service).
+  - Replace the original `ppt/media/image*.png` while preserving the shape’s geometry on the slide.
+
+Controls and CLI flags:
+- `--translate-images` (bool, default: off):
+  - When on, image OCR and translation pipeline are enabled.
+  - When off, images are left untouched.
+- `--image-ocr-backend`: select OCR backend (`tesseract`, `azure-vision`, etc.).
+- `--image-ocr-config`: JSON/YAML config for OCR backend (API keys, endpoints, language hints).
+- `--image-overlay-style` (future): preset styles for overlays (background color, opacity, font family).
+
+Performance considerations:
+- Image OCR can significantly increase processing time and API cost.
+- When `--translate-images` is enabled, the tool:
+  - Logs the number of images processed and OCR timings.
+  - Optionally supports batching images and limiting max concurrent OCR requests (aligned with `--max-concurrent-requests` or a separate OCR concurrency limit).
+
+### 12.5 Post-Translation QA Report
+
+Goals:
+- Help users quickly identify slides where translated text may be truncated, overflowing, or visually problematic.
+- Provide a machine-readable report and an optional human-readable summary.
+
+Scope of checks:
+- Text overflow/truncation heuristics:
+  - Compare length of translated text vs source text (e.g., flag if length ratio exceeds a configurable threshold such as 1.6×).
+  - Analyze text frames versus their bounding boxes (width/height) using approximate character-per-line/lines-per-box heuristics.
+  - Use PPTX layout properties (e.g., auto-fit vs fixed size) where available to infer likely overflow.
+- Layout consistency:
+  - Detect if bullet indentation levels changed in an unexpected way (e.g., significantly longer bullets causing wrap to additional lines).
+  - Optionally detect if a slide has a much higher word count than others in the same section (potential readability issue).
+- Image text overlays:
+  - When `--translate-images` is enabled, check if overlay text boxes extend beyond image bounds by more than a small tolerance.
+
+Report contents:
+- QA report is associated with a `run_id` and includes:
+  - `run_id`, source/target language, backend, model, timestamp.
+  - Per-slide entries with:
+    - Slide index and title (if any).
+    - For each flagged shape/text box:
+      - Shape identifier (slide-local index or OOXML id).
+      - Original text and translated text (or truncated preview).
+      - Reason(s) for flag (e.g., "length_ratio>1.8", "estimated_overflow", "overlay_outside_image").
+- Optional summary section:
+  - Number of slides scanned, number of slides with issues.
+  - Top categories of issues.
+
+Output formats and CLI:
+- `--qa-report <path>`:
+  - When provided, the tool writes a machine-readable QA report (JSON by default) to the given path.
+  - If not provided, QA still runs but only severe issues may be logged to stdout/stderr.
+- `--qa-report-format`:
+  - `json` (default): structured data for tools/automation.
+  - `markdown`: a readable summary suitable for manual review.
+- `--qa-threshold-length-ratio` and `--qa-threshold-overflow-score` (future):
+  - Allow users to tune how aggressive the overflow/truncation detector is.

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Iterable, List, Optional, Sequence
 
 from openai import OpenAI
@@ -42,10 +43,40 @@ class OpenAIBackend(TranslationBackend):
         max_batch_chars: int = 4000,
         glossary: Optional[Sequence[dict]] = None,
         context: Optional[str] = None,
+        max_concurrent_requests: int = 1,
     ) -> List[TranslatableUnit]:
         translated: List[TranslatableUnit] = []
-        for batch in self._batch_units(units, max_batch_chars):
-            translations = self._translate_batch(batch, source_lang, target_lang, glossary, context)
+        batches = list(self._batch_units(units, max_batch_chars))
+        if not batches:
+            return translated
+
+        def process_batch(idx: int, batch: List[TranslatableUnit]) -> Dict[str, str]:
+            try:
+                return self._translate_batch(batch, source_lang, target_lang, glossary, context)
+            except Exception as exc:
+                msg = str(exc).lower()
+                if "context length" in msg or "maximum" in msg:
+                    smaller = max(500, max_batch_chars // 2)
+                    self.logger.warning("Batch %s failed due to size; retrying with smaller batches (%s chars)", idx, smaller)
+                    retry_translations: Dict[str, str] = {}
+                    for smaller_batch in self._batch_units(batch, smaller):
+                        partial = self._translate_batch(smaller_batch, source_lang, target_lang, glossary, context)
+                        retry_translations.update(partial)
+                    return retry_translations
+                raise
+
+        if max_concurrent_requests > 1 and len(batches) > 1:
+            with ThreadPoolExecutor(max_workers=max_concurrent_requests) as executor:
+                futures = {executor.submit(process_batch, idx, batch): idx for idx, batch in enumerate(batches)}
+                results: Dict[int, Dict[str, str]] = {}
+                for future in as_completed(futures):
+                    idx = futures[future]
+                    results[idx] = future.result()
+            ordered = [results[i] for i in sorted(results.keys())]
+        else:
+            ordered = [process_batch(idx, batch) for idx, batch in enumerate(batches)]
+
+        for batch, translations in zip(batches, ordered):
             for unit in batch:
                 text = translations.get(unit.id)
                 if text is None:

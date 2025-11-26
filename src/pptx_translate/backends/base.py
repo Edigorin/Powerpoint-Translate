@@ -20,6 +20,7 @@ class TranslationBackend(ABC):
         max_batch_chars: int = 4000,
         glossary: Optional[Sequence[dict]] = None,
         context: Optional[str] = None,
+        max_concurrent_requests: int = 1,
     ) -> List[TranslatableUnit]:
         """
         Translate a list of units and return updated units.

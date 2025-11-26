@@ -43,6 +43,14 @@ Key flags:
 - `--glossary`: JSON/CSV file with `source,target` terms to enforce.
 - `--context` / `--context-file`: pass domain/product context for better terminology.
 - `--no-dedupe-text`: disable deduplication of repeated strings (on by default to speed up).
+- `--run-id` / `--no-run-id`: set or disable run-id appending to output filename (default: auto run-id appended).
+- `--profile`: `fast|balanced|quality` presets for batching/concurrency/model choices.
+- `--max-concurrent-requests`: enable parallel translation batches (for supported backends).
+- `--translate-images`: OCR + translate text inside images (needs OCR backend, e.g., pytesseract).
+- `--image-ocr-backend`, `--image-ocr-config`: select/configure OCR backend.
+- `--qa-report`, `--qa-report-format`: write a post-translation QA report (json/markdown).
+- `--generate-glossary`: generate a suggested glossary file (no translation) from the deck.
+- `--deck-profile-out`: write the auto-derived deck context/profile to a file.
 
 ### Step-by-step: run with OpenAI
 
@@ -83,12 +91,18 @@ Key flags:
 
    # Add glossary + context to improve technical terms
    pptx-translate input.pptx --target-lang es --backend openai --backend-config openai.json --glossary glossary.csv --context "Cybersecurity incident response playbook"
+
+   # Include images (OCR) and run QA report
+   pptx-translate input.pptx --target-lang es --backend openai --backend-config openai.json --translate-images --qa-report report.json
    ```
 6. Optional toggles:
    - Skip notes: `--no-include-notes`
    - Skip masters/layouts: `--no-include-masters`
    - Dry run (see translations, no file write): `--dry-run`
    - Disable dedupe (if you want every instance translated independently): `--no-dedupe-text`
+   - Set profile: `--profile fast` (larger batches, more concurrency) or `--profile quality` (smaller batches, higher quality model).
+   - Generate glossary first: `--generate-glossary terms.csv` then rerun with `--glossary terms.csv`.
+   - Write deck profile/context to review: `--deck-profile-out profile.txt`.
 
 ### Dev / tests
 
