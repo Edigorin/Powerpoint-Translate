@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Sequence
 
 from openai import OpenAI
 
@@ -40,10 +40,12 @@ class OpenAIBackend(TranslationBackend):
         source_lang: Optional[str],
         target_lang: str,
         max_batch_chars: int = 4000,
+        glossary: Optional[Sequence[dict]] = None,
+        context: Optional[str] = None,
     ) -> List[TranslatableUnit]:
         translated: List[TranslatableUnit] = []
         for batch in self._batch_units(units, max_batch_chars):
-            translations = self._translate_batch(batch, source_lang, target_lang)
+            translations = self._translate_batch(batch, source_lang, target_lang, glossary, context)
             for unit in batch:
                 text = translations.get(unit.id)
                 if text is None:
@@ -65,13 +67,20 @@ class OpenAIBackend(TranslationBackend):
         batch: List[TranslatableUnit],
         source_lang: Optional[str],
         target_lang: str,
+        glossary: Optional[Sequence[dict]],
+        context: Optional[str],
     ) -> Dict[str, str]:
         items = [{"id": u.id, "text": u.source_text} for u in batch]
+        glossary_text = self._format_glossary(glossary) if glossary else ""
+        context_text = f"Context: {context}\n" if context else ""
         user_content = (
             f"Translate each item from {source_lang or 'auto-detect'} to {target_lang}. "
             'Return JSON: {"translations": [{"id": "...", "text": "<translated>"} ...]} '
             "Do not drop or reorder items. Preserve placeholders and numbering. "
-            "Only respond with valid JSON and nothing else.\n\n"
+            "Only respond with valid JSON and nothing else.\n"
+            f"{context_text}"
+            f"{glossary_text}"
+            "\n"
             f"Items: {json.dumps(items, ensure_ascii=False)}"
         )
         response = self.client.chat.completions.create(
@@ -99,6 +108,18 @@ class OpenAIBackend(TranslationBackend):
                 continue
             mapping[str(item_id)] = str(text)
         return mapping
+
+    def _format_glossary(self, glossary: Sequence[dict]) -> str:
+        pairs = []
+        for entry in glossary:
+            src = entry.get("source")
+            tgt = entry.get("target")
+            if not src or not tgt:
+                continue
+            pairs.append(f"'{src}' -> '{tgt}'")
+        if not pairs:
+            return ""
+        return "Glossary (must use these translations): " + "; ".join(pairs) + "\n"
 
     def _batch_units(self, units: Iterable[TranslatableUnit], max_batch_chars: int) -> List[List[TranslatableUnit]]:
         batches: List[List[TranslatableUnit]] = []

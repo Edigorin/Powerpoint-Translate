@@ -42,12 +42,14 @@ class PptxTranslator:
         include_masters: bool = True,
         max_batch_chars: int = 4000,
         dry_run: bool = False,
+        dedupe_text: bool = True,
     ) -> None:
         self.backend = backend
         self.include_notes = include_notes
         self.include_masters = include_masters
         self.max_batch_chars = max_batch_chars
         self.dry_run = dry_run
+        self.dedupe_text = dedupe_text
         self.logger = logging.getLogger(__name__)
 
     def translate_file(
@@ -56,6 +58,8 @@ class PptxTranslator:
         output_path: Path,
         source_lang: str | None,
         target_lang: str,
+        glossary: list[dict] | None = None,
+        context: str | None = None,
     ) -> List[TranslatableUnit]:
         """
         Main entrypoint: translate `input_path` into `output_path`.
@@ -73,8 +77,12 @@ class PptxTranslator:
 
             self.logger.info("Extracted %d text units", len(units))
 
-            translated_units = self.backend.translate(
-                units, source_lang=source_lang, target_lang=target_lang, max_batch_chars=self.max_batch_chars
+            translated_units = self._translate_units(
+                units,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                glossary=glossary,
+                context=context,
             )
             translated_map: Dict[str, TranslatableUnit] = {u.id: u for u in translated_units}
 
@@ -124,6 +132,60 @@ class PptxTranslator:
             parts.append(DocumentPart(path=path, tree=tree, nodes=nodes))
 
         return parts
+
+    def _translate_units(
+        self,
+        units: List[TranslatableUnit],
+        source_lang: str | None,
+        target_lang: str,
+        glossary: list[dict] | None,
+        context: str | None,
+    ) -> List[TranslatableUnit]:
+        if not self.dedupe_text:
+            return self.backend.translate(
+                units,
+                source_lang=source_lang,
+                target_lang=target_lang,
+                max_batch_chars=self.max_batch_chars,
+                glossary=glossary,
+                context=context,
+            )
+
+        text_to_units: Dict[str, List[TranslatableUnit]] = {}
+        unique_units: List[TranslatableUnit] = []
+        for unit in units:
+            key = unit.source_text
+            if key not in text_to_units:
+                text_to_units[key] = [unit]
+                unique_units.append(unit)
+            else:
+                text_to_units[key].append(unit)
+
+        self.logger.info("Deduped %d texts down to %d unique entries", len(units), len(unique_units))
+
+        translated_unique = self.backend.translate(
+            unique_units,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            max_batch_chars=self.max_batch_chars,
+            glossary=glossary,
+            context=context,
+        )
+        by_text: Dict[str, str] = {u.source_text: (u.translated_text or u.source_text) for u in translated_unique}
+
+        translated_all: List[TranslatableUnit] = []
+        for unit in units:
+            translated_text = by_text.get(unit.source_text, unit.source_text)
+            translated_all.append(
+                TranslatableUnit(
+                    id=unit.id,
+                    location=unit.location,
+                    source_text=unit.source_text,
+                    translated_text=translated_text,
+                    context=unit.context,
+                )
+            )
+        return translated_all
 
     def _inject_translations(
         self,

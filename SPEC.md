@@ -55,6 +55,9 @@ Options:
 - `--include-masters` / `--exclude-masters`: whether to translate slide masters/layouts.
 - `--dry-run`: do not write output; print or export extracted text and translations.
 - `--max-batch-chars`: max characters per translation request (backend-specific).
+- `--glossary`: path to glossary file (JSON/CSV with `source,target`).
+- `--context` / `--context-file`: free-text domain/context hint for translation.
+- `--dedupe-text` / `--no-dedupe-text`: control deduplication of identical source strings before translation.
 
 Exit codes:
 - `0`: success.
@@ -150,7 +153,7 @@ Initial backends (spec level; implementation later):
   - Uses OpenAI Chat Completions (e.g., GPT-4o) to translate batches of text.
   - Respects a max tokens/characters limit.
   - Accepts config JSON for `model`, `temperature`, `base_url`, and `api_key`.
-  - Optional glossaries / style hints via system prompts.
+  - Supports glossary enforcement and free-text context to bias terminology via prompt.
 
 Backend configuration:
 - Read from:
@@ -199,9 +202,8 @@ Backend configuration:
 - Add optional concurrency:
   - Spec an internal scheduler that can send multiple batches in parallel (subject to rate limits).
   - Future CLI flag: `--max-concurrent-requests` to control parallelism.
-- De-duplicate repeated text:
-  - Detect identical `source_text` across the deck (e.g. repeated bullet templates, footers).
-  - Translate each unique string once, then reuse cached translations when writing back.
+- De-duplicate repeated text (implemented):
+  - Identical `source_text` entries are translated once and reused for all duplicates.
 - Allow “fast mode” profiles:
   - Preset configurations that skip masters/notes or use a cheaper/faster model for bulk translation.
 
@@ -210,10 +212,12 @@ Backend configuration:
 - Deck-level context analysis:
   - First pass over all slides to build a “deck profile” (title, agenda, frequent terms, section headers).
   - Use this profile as part of the system prompt for all translation batches.
-- Glossary and terminology enforcement:
-  - Accept user-provided glossary files via CLI (e.g. `--glossary glossary.json` or CSV with `source,target` columns).
-  - Pass glossary entries into the backend prompt with instructions like “must use these translations for the following terms”.
-  - Optionally add a pre-check that flags glossary terms not found in the deck.
+- User-provided context (implemented):
+  - CLI flags `--context` / `--context-file` allow passing domain/product guidance into the backend prompt.
+- Glossary and terminology enforcement (implemented for user-supplied files):
+  - Accepts user-provided glossary files via CLI (`--glossary glossary.json` or CSV with `source,target` columns).
+  - Passes glossary entries into the backend prompt with instructions like “must use these translations for the following terms”.
+  - Optional pre-check to flag glossary terms not found in the deck (future).
 - Two-step context workflow (optional):
   - Step 1: Summarize the deck and extract candidate domain terms via LLM.
   - Step 2: Present or export a suggested glossary for user review.

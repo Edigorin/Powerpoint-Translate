@@ -40,6 +40,9 @@ Key flags:
 - `--include-masters/--no-include-masters`: toggle master/layout translation (default on).
 - `--backend`: translation backend id (`dummy`, `openai`).
 - `--backend-config`: backend-specific config (JSON).
+- `--glossary`: JSON/CSV file with `source,target` terms to enforce.
+- `--context` / `--context-file`: pass domain/product context for better terminology.
+- `--no-dedupe-text`: disable deduplication of repeated strings (on by default to speed up).
 
 ### Step-by-step: run with OpenAI
 
@@ -65,8 +68,8 @@ Key flags:
      ```json
      {
        "api_key": "sk-...",
-       "model": "gpt-4o-mini",
-       "temperature": 0.0
+     "model": "gpt-4o-mini",
+     "temperature": 0.0
      }
      ```
      Save as `openai.json`.
@@ -77,11 +80,15 @@ Key flags:
 
    # Or using the config file
    pptx-translate input.pptx --target-lang es --backend openai --backend-config openai.json
+
+   # Add glossary + context to improve technical terms
+   pptx-translate input.pptx --target-lang es --backend openai --backend-config openai.json --glossary glossary.csv --context "Cybersecurity incident response playbook"
    ```
 6. Optional toggles:
    - Skip notes: `--no-include-notes`
    - Skip masters/layouts: `--no-include-masters`
    - Dry run (see translations, no file write): `--dry-run`
+   - Disable dedupe (if you want every instance translated independently): `--no-dedupe-text`
 
 ### Dev / tests
 

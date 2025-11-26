@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Iterable, List, Optional
+from typing import Iterable, List, Optional, Sequence
 
 from pptx_translate.backends.base import TranslationBackend
 from pptx_translate.models import TranslatableUnit
@@ -17,6 +17,8 @@ class DummyBackend(TranslationBackend):
         source_lang: Optional[str],
         target_lang: str,
         max_batch_chars: int = 4000,
+        glossary: Optional[Sequence[dict]] = None,
+        context: Optional[str] = None,
     ) -> List[TranslatableUnit]:
         updated: List[TranslatableUnit] = []
         for unit in units:
